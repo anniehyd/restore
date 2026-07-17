@@ -1,0 +1,22 @@
+# Never ship secrets or local state into the image.
+.env
+token.json
+google_credentials.json
+*.credentials.json
+state.json
+
+# Local dev cruft
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.git/
+.DS_Store
+
+# Not needed at runtime
+tests/
+scripts/
+Makefile
+README.md
+CLAUDE.md

@@ -1,0 +1,41 @@
+{
+  "data": {
+    "metrics": [
+      {
+        "name": "sleep_analysis",
+        "units": "hr",
+        "data": [
+          {
+            "date": "2026-07-16 06:20:00 +0000",
+            "totalSleep": 5.0,
+            "asleep": 5.0,
+            "core": 3.7,
+            "deep": 0.6,
+            "rem": 0.7,
+            "awake": 0.85,
+            "sleepStart": "2026-07-16 01:10:00 +0000",
+            "sleepEnd": "2026-07-16 06:20:00 +0000",
+            "inBed": 5.9,
+            "inBedStart": "2026-07-16 00:55:00 +0000",
+            "inBedEnd": "2026-07-16 06:20:00 +0000",
+            "source": "Apple Watch"
+          }
+        ]
+      },
+      {
+        "name": "heart_rate_variability",
+        "units": "ms",
+        "data": [
+          { "date": "2026-07-16 06:20:00 +0000", "qty": 34.0 }
+        ]
+      },
+      {
+        "name": "resting_heart_rate",
+        "units": "count/min",
+        "data": [
+          { "date": "2026-07-16 06:20:00 +0000", "qty": 66.0 }
+        ]
+      }
+    ]
+  }
+}

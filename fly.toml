@@ -1,0 +1,20 @@
+# Fly.io config for Restore. Rename `app` to something globally unique before
+# `fly deploy` (Fly app names are global). ewr = Newark, closest region to NYC.
+app = "restore-annie"
+primary_region = "ewr"
+
+[build]
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  # Keep one machine always-on so the once-a-day wake webhook never eats a
+  # cold start. Set auto_stop_machines = "stop" and min_machines_running = 0
+  # to scale to zero and save money (adds ~2-4s cold start per hit).
+  auto_start_machines = true
+  auto_stop_machines = false
+  min_machines_running = 1
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "256mb"
