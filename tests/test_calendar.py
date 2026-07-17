@@ -55,10 +55,12 @@ def test_min_minutes_filters_short_gaps(busy_day):
     assert [s.duration_minutes for s in slots] == [120, 90]
 
 
-def test_all_day_event_blocks_everything():
-    events = [Event(title="Conference (all day)", start=_et(2026, 7, 16, 0, 0),
+def test_all_day_event_does_not_block():
+    # All-day events (birthdays, trips) shouldn't wipe out the whole day's slots.
+    events = [Event(title="Someone's birthday", start=_et(2026, 7, 16, 0, 0),
                     end=_et(2026, 7, 17, 0, 0), is_all_day=True)]
-    assert find_free_slots(events) == []
+    slots = find_free_slots(events)
+    assert len(slots) == 1 and slots[0].duration_minutes == 720  # full 9am–9pm free
 
 
 def test_empty_day_is_one_big_slot():

@@ -169,9 +169,8 @@ def find_free_slots(events: list[Event], min_minutes: int = 20) -> list[TimeSlot
     busy: list[tuple[datetime, datetime]] = []
     for e in events:
         if e.is_all_day:
-            busy.append((waking_start, waking_end))
-        else:
-            busy.append((e.start - buffer, e.end + buffer))
+            continue  # birthdays, trips, all-day reminders don't block recovery time
+        busy.append((e.start - buffer, e.end + buffer))
 
     clipped: list[tuple[datetime, datetime]] = []
     for s, e in busy:

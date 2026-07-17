@@ -111,7 +111,13 @@ def _chat_context(snapshot: Optional[dict]) -> dict:
         log.error("chat: calendar fetch failed, using snapshot events: %s", exc)
         events = _events_from_snapshot(snapshot)
 
-    free_slots = [s for s in find_free_slots(events) if s.end > now]
+    # Only *future* free time: clamp each slot's start to now, drop past/too-short.
+    free_slots = []
+    for s in find_free_slots(events):
+        start = max(s.start, now)
+        minutes = int((s.end - start).total_seconds() // 60)
+        if minutes >= 20:
+            free_slots.append({"start": _clock(start), "end": _clock(s.end), "duration_minutes": minutes})
     remaining = [e for e in events if not e.is_all_day and e.end > now]
     return {
         "now": _clock(now),
@@ -120,10 +126,7 @@ def _chat_context(snapshot: Optional[dict]) -> dict:
         "remaining_events": [
             {"title": e.title, "start": _clock(e.start), "end": _clock(e.end)} for e in remaining
         ],
-        "free_slots": [
-            {"start": _clock(s.start), "end": _clock(s.end), "duration_minutes": s.duration_minutes}
-            for s in free_slots
-        ],
+        "free_slots": free_slots,
     }
 
 

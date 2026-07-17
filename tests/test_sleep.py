@@ -501,3 +501,15 @@ def test_reset_command_gated_by_demo_mode(monkeypatch):
     client.post("/telegram", json=_tg_update(32, "/reset"), headers=hdr)
     assert sent[-1][1]["inline_keyboard"][0][0]["callback_data"] == "book"   # morning msg + button
     assert client.get("/latest").json()["sleep"]["quality_flag"] == "poor"
+
+
+def test_chat_context_clamps_past_free_slots(monkeypatch):
+    """A slot spanning 'now' must be reported starting at now, never in the past."""
+    from app import main
+    from app.calendar_client import Event
+    monkeypatch.setattr(main, "_now", lambda: _et(14, 0))  # 2pm
+    monkeypatch.setattr(main, "get_today_events",
+                        lambda: [Event(title="Workout", start=_et(18, 0), end=_et(19, 0), is_all_day=False)])
+    ctx = main._chat_context({})
+    assert ctx["free_slots"], "should still surface afternoon/evening slots"
+    assert all(s["start"].endswith("PM") for s in ctx["free_slots"])  # nothing before 2pm
