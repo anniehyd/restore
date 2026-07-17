@@ -24,7 +24,7 @@ from datetime import datetime
 from typing import Optional
 from zoneinfo import ZoneInfo
 
-from fastapi import BackgroundTasks, Body, FastAPI, Header, HTTPException
+from fastapi import BackgroundTasks, Body, FastAPI, Header, HTTPException, Query
 from fastapi.responses import HTMLResponse
 from pydantic import ValidationError
 
@@ -61,15 +61,33 @@ def health() -> dict:
     return {"status": "ok"}
 
 
+def _check_page_token(k: Optional[str]) -> None:
+    """Gate the demo page + /latest behind PAGE_TOKEN (your sleep/calendar data).
+
+    If PAGE_TOKEN is unset the pages are open (local dev). When set, both / and
+    /latest require ?k=<PAGE_TOKEN>.
+    """
+    token = os.environ.get("PAGE_TOKEN")
+    if not token:
+        return
+    if not hmac.compare_digest(k or "", token):
+        raise HTTPException(status_code=403, detail="forbidden")
+
+
 @app.get("/", response_class=HTMLResponse)
-def demo_page() -> str:
-    """Single-file static demo page (fetches /latest client-side)."""
-    return DEMO_HTML.replace("__BOT_URL__", persona.telegram_url()).replace("__BOT_NAME__", persona.name())
+def demo_page(k: Optional[str] = Query(default=None)) -> str:
+    """Single-file demo page (fetches /latest client-side). Gated by PAGE_TOKEN."""
+    _check_page_token(k)
+    return (DEMO_HTML
+            .replace("__BOT_URL__", persona.telegram_url())
+            .replace("__BOT_NAME__", persona.name())
+            .replace("__PAGE_TOKEN__", os.environ.get("PAGE_TOKEN", "")))
 
 
 @app.get("/latest")
-def latest() -> dict:
-    """The last generated brief + parsed sleep summary (for the demo page)."""
+def latest(k: Optional[str] = Query(default=None)) -> dict:
+    """The last brief + parsed sleep summary (for the demo page). Gated by PAGE_TOKEN."""
+    _check_page_token(k)
     snapshot = store.load_snapshot()
     if snapshot is None:
         raise HTTPException(status_code=404, detail="no brief generated yet")

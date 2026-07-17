@@ -1,5 +1,7 @@
 # Restore
 
+[![tests](https://github.com/anniehyd/restore/actions/workflows/ci.yml/badge.svg)](https://github.com/anniehyd/restore/actions/workflows/ci.yml)
+
 A personal, sleep-aware morning advisor. When my Sleep Focus ends, an iOS
 Shortcut (via Health Auto Export) POSTs last night's sleep data to a webhook;
 Restore reads my sleep and today's calendar, then sends a short morning brief as

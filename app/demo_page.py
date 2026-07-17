@@ -110,7 +110,7 @@ DEMO_HTML = r'''<!doctype html>
 </div>
 
 <script>
-const BOT_URL = "__BOT_URL__", BOT_NAME = "__BOT_NAME__";
+const BOT_URL = "__BOT_URL__", BOT_NAME = "__BOT_NAME__", PAGE_TOKEN = "__PAGE_TOKEN__";
 const WIN_START = 9 * 60, WIN_END = 21 * 60, WIN = WIN_END - WIN_START;
 const mins = iso => { const m = /T(\d\d):(\d\d)/.exec(iso); return m ? (+m[1]) * 60 + (+m[2]) : null; };
 const pct = m => ((m - WIN_START) / WIN) * 100;
@@ -182,7 +182,7 @@ function render(d) {
   el("src").textContent = "source: " + d.brief_source + note + rb;
 }
 
-fetch("/latest")
+fetch("/latest" + (PAGE_TOKEN ? "?k=" + encodeURIComponent(PAGE_TOKEN) : ""))
   .then(r => r.ok ? r.json() : Promise.reject(r.status))
   .then(render)
   .catch(() => { el("empty").textContent = "No brief yet — run /wake (or scripts/demo_reset.py)."; });

@@ -168,6 +168,17 @@ def test_latest_404_when_no_snapshot():
     assert client.get("/latest").status_code == 404  # fresh isolated state
 
 
+def test_page_gate_blocks_without_token(monkeypatch, bad_night, stub_pipeline):
+    monkeypatch.setenv("PAGE_TOKEN", "sekret")
+    client.post("/wake", json=bad_night)  # seed a snapshot
+    assert client.get("/latest").status_code == 403          # no ?k
+    assert client.get("/latest?k=wrong").status_code == 403  # wrong ?k
+    assert client.get("/").status_code == 403                # page gated too
+    assert client.get("/latest?k=sekret").status_code == 200 # correct ?k
+    r = client.get("/?k=sekret")
+    assert r.status_code == 200 and "sekret" in r.text       # token injected for the page's fetch
+
+
 def test_wake_writes_snapshot_then_latest_returns_it(bad_night, stub_pipeline):
     assert client.post("/wake", json=bad_night).status_code == 200
 
