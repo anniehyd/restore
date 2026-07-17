@@ -1,7 +1,5 @@
 # Never ship secrets or local state into the image.
 .env
-token.json
-google_credentials.json
 *.credentials.json
 state.json
 

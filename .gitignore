@@ -1,7 +1,5 @@
-# Secrets / OAuth
+# Secrets
 .env
-google_credentials.json
-token.json
 *.credentials.json
 
 # Python

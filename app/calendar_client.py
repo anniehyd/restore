@@ -1,12 +1,19 @@
-"""Google Calendar read/write via the Calendar API v3 (installed-app OAuth).
+"""Apple / iCloud Calendar read + write via CalDAV.
 
-This is a personal, single-user project, so we use the installed-app OAuth
-flow: a one-time local authorization (see scripts/authorize.py) writes a
-refresh token to token.json, and this module loads/refreshes it on demand.
+Apple has no Google-style REST API, so we talk to iCloud over CalDAV using an
+app-specific password (generate one at appleid.apple.com → Sign-In & Security →
+App-Specific Passwords). No OAuth dance, no token file — just two env vars.
 
-Public API:
-  - get_today_events(calendar_id="primary") -> list[Event]
+Public API (unchanged from before):
+  - get_today_events() -> list[Event]
   - find_free_slots(events, min_minutes=20) -> list[TimeSlot]
+  - create_restore_block(slot, suggestion) -> dict
+
+Env:
+  ICLOUD_USERNAME       your Apple ID email
+  ICLOUD_APP_PASSWORD   an app-specific password (NOT your Apple ID password)
+  ICLOUD_CALENDAR_NAME  optional; which calendar to use (default: the first one)
+  CALDAV_URL            optional; default https://caldav.icloud.com
 
 Times are handled in the local timezone (America/New_York).
 """
@@ -19,25 +26,17 @@ from datetime import date, datetime, time, timedelta
 from typing import Optional
 from zoneinfo import ZoneInfo
 
-from google.auth.transport.requests import Request
-from google.oauth2.credentials import Credentials
-from googleapiclient.discovery import build
+import caldav
+import icalendar
 from pydantic import BaseModel
 
 log = logging.getLogger(__name__)
 
-# Read + write: write is needed for the stretch "Restore" recovery-block feature.
-SCOPES = ["https://www.googleapis.com/auth/calendar"]
-
 LOCAL_TZ = ZoneInfo("America/New_York")
 
-# Where the OAuth client-secrets JSON (downloaded from Google Cloud Console)
-# and the resulting refresh token live. Both are gitignored.
-CREDENTIALS_PATH = os.environ.get("GOOGLE_CREDENTIALS_PATH", "google_credentials.json")
-TOKEN_PATH = os.environ.get("GOOGLE_TOKEN_PATH", "token.json")
+CALDAV_URL = os.environ.get("CALDAV_URL", "https://caldav.icloud.com")
 
-# Waking hours we're willing to schedule recovery in, and the dead-air buffer
-# we keep around each event so a "free" slot isn't wedged against a meeting.
+# Waking hours we schedule recovery in, and the dead-air buffer around events.
 WAKING_START_HOUR = 9   # 9am
 WAKING_END_HOUR = 21    # 9pm
 EVENT_BUFFER_MINUTES = 30
@@ -61,148 +60,94 @@ class TimeSlot(BaseModel):
     duration_minutes: int
 
 
-# --- OAuth / service --------------------------------------------------------
+# --- CalDAV connection ------------------------------------------------------
 
 
-GOOGLE_TOKEN_URI = "https://oauth2.googleapis.com/token"
-
-
-def _credentials_from_env() -> Optional[Credentials]:
-    """Build credentials from GOOGLE_REFRESH_TOKEN + client id/secret, if set.
-
-    This is the deployment path: no token.json on disk, nothing sensitive in the
-    repo — just three secrets injected as env vars. Returns None if
-    GOOGLE_REFRESH_TOKEN isn't set (fall back to the local token.json flow).
-    """
-    refresh_token = os.environ.get("GOOGLE_REFRESH_TOKEN")
-    if not refresh_token:
-        return None
-
-    try:
-        client_id = os.environ["GOOGLE_CLIENT_ID"]
-        client_secret = os.environ["GOOGLE_CLIENT_SECRET"]
-    except KeyError as exc:
-        raise RuntimeError(f"GOOGLE_REFRESH_TOKEN is set but {exc} is missing") from exc
-
-    creds = Credentials(
-        token=None,  # no access token yet; refresh() mints one
-        refresh_token=refresh_token,
-        client_id=client_id,
-        client_secret=client_secret,
-        token_uri=GOOGLE_TOKEN_URI,
-        scopes=SCOPES,
-    )
-    log.info("Loading Google credentials from environment (refresh token)")
-    creds.refresh(Request())
-    return creds
-
-
-def _load_credentials() -> Credentials:
-    """Credentials from env (deployment) or token.json (local). Fails loudly."""
-    env_creds = _credentials_from_env()
-    if env_creds is not None:
-        return env_creds
-
-    if not os.path.exists(TOKEN_PATH):
+def _open_calendar() -> "caldav.Calendar":
+    """Connect to iCloud and return the target calendar. Fails loudly."""
+    username = os.environ.get("ICLOUD_USERNAME")
+    password = os.environ.get("ICLOUD_APP_PASSWORD")
+    if not username or not password:
         raise RuntimeError(
-            f"No credentials found. Either set GOOGLE_REFRESH_TOKEN / "
-            f"GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET (deployment), or run "
-            f"`python scripts/authorize.py` to create {TOKEN_PATH} (local)."
+            "ICLOUD_USERNAME / ICLOUD_APP_PASSWORD not set. Generate an "
+            "app-specific password at appleid.apple.com and set both."
         )
 
-    creds = Credentials.from_authorized_user_file(TOKEN_PATH, SCOPES)
-    if creds.valid:
-        return creds
+    client = caldav.DAVClient(url=CALDAV_URL, username=username, password=password)
+    principal = client.principal()
+    calendars = principal.calendars()
+    if not calendars:
+        raise RuntimeError("No iCloud calendars found for this Apple ID")
 
-    if creds.expired and creds.refresh_token:
-        log.info("Refreshing expired Google Calendar token")
-        creds.refresh(Request())
-        with open(TOKEN_PATH, "w") as fh:
-            fh.write(creds.to_json())
-        return creds
-
-    raise RuntimeError(
-        f"{TOKEN_PATH} is present but invalid and cannot be refreshed. "
-        f"Re-run `python scripts/authorize.py`."
-    )
-
-
-def _calendar_service():
-    return build("calendar", "v3", credentials=_load_credentials(), cache_discovery=False)
-
-
-def _fetch_raw_events(calendar_id: str, time_min: datetime, time_max: datetime) -> list[dict]:
-    """Call the Calendar API and return the raw event items. Mocked in tests."""
-    log.info(
-        "Calendar API events.list calendar=%s window=%s..%s",
-        calendar_id, time_min.isoformat(), time_max.isoformat(),
-    )
-    service = _calendar_service()
-    resp = (
-        service.events()
-        .list(
-            calendarId=calendar_id,
-            timeMin=time_min.isoformat(),
-            timeMax=time_max.isoformat(),
-            singleEvents=True,
-            orderBy="startTime",
+    wanted = os.environ.get("ICLOUD_CALENDAR_NAME")
+    if wanted:
+        for cal in calendars:
+            if cal.name == wanted:
+                return cal
+        raise RuntimeError(
+            f"Calendar {wanted!r} not found; available: {[c.name for c in calendars]}"
         )
-        .execute()
-    )
-    items = resp.get("items", [])
-    log.info("Calendar API returned %d event(s)", len(items))
-    return items
+    return calendars[0]
+
+
+def _search_events(time_min: datetime, time_max: datetime) -> list:
+    """Return icalendar VEVENT components in the window. Mocked in tests."""
+    cal = _open_calendar()
+    log.info("CalDAV search window=%s..%s", time_min.isoformat(), time_max.isoformat())
+    results = cal.search(start=time_min, end=time_max, event=True, expand=True)
+    comps = [r.icalendar_component for r in results]
+    log.info("CalDAV returned %d event(s)", len(comps))
+    return comps
 
 
 # --- Parsing ----------------------------------------------------------------
 
 
-def _parse_event(item: dict) -> Event:
-    """Convert one raw Calendar API event into our Event model (local tz)."""
-    start_raw = item["start"]
-    end_raw = item["end"]
+def _to_local(dt: datetime) -> datetime:
+    return dt.replace(tzinfo=LOCAL_TZ) if dt.tzinfo is None else dt.astimezone(LOCAL_TZ)
 
-    if "date" in start_raw:  # all-day event: {"date": "2026-07-16"}
-        start = datetime.fromisoformat(start_raw["date"]).replace(tzinfo=LOCAL_TZ)
-        end = datetime.fromisoformat(end_raw["date"]).replace(tzinfo=LOCAL_TZ)
-        is_all_day = True
-    else:  # timed event: {"dateTime": "2026-07-16T09:30:00-04:00"}
-        start = datetime.fromisoformat(start_raw["dateTime"]).astimezone(LOCAL_TZ)
-        end = datetime.fromisoformat(end_raw["dateTime"]).astimezone(LOCAL_TZ)
+
+def _parse_component(comp) -> Event:
+    """Convert one icalendar VEVENT into our Event model (local tz)."""
+    title = str(comp.get("summary", "(no title)"))
+    dtstart = comp.get("dtstart").dt
+    dtend_prop = comp.get("dtend")
+
+    if isinstance(dtstart, datetime):  # timed event
+        start = _to_local(dtstart)
+        end = _to_local(dtend_prop.dt) if dtend_prop is not None else start + timedelta(hours=1)
         is_all_day = False
+    else:  # all-day event: dtstart is a date
+        start = datetime(dtstart.year, dtstart.month, dtstart.day, tzinfo=LOCAL_TZ)
+        if dtend_prop is not None:
+            d = dtend_prop.dt
+            end = datetime(d.year, d.month, d.day, tzinfo=LOCAL_TZ)
+        else:
+            end = start + timedelta(days=1)
+        is_all_day = True
 
-    return Event(
-        title=item.get("summary", "(no title)"),
-        start=start,
-        end=end,
-        is_all_day=is_all_day,
-    )
+    return Event(title=title, start=start, end=end, is_all_day=is_all_day)
 
 
 # --- Public API -------------------------------------------------------------
 
 
-def get_today_events(calendar_id: str = "primary", *, now: Optional[datetime] = None) -> list[Event]:
+def get_today_events(*, now: Optional[datetime] = None) -> list[Event]:
     """Return today's events from `now` until 11pm local time.
 
-    `now` is injectable for testing; in production it defaults to the current
-    local time. Returns [] if it's already past the 11pm cutoff.
+    `now` is injectable for testing; defaults to the current local time.
+    Returns [] if it's already past the 11pm cutoff.
     """
     now = now or datetime.now(LOCAL_TZ)
     cutoff = now.replace(hour=DAY_CUTOFF_HOUR, minute=0, second=0, microsecond=0)
     if now >= cutoff:
         log.info("get_today_events called after %02d:00 cutoff; nothing to fetch", DAY_CUTOFF_HOUR)
         return []
-
-    raw = _fetch_raw_events(calendar_id, now, cutoff)
-    return [_parse_event(item) for item in raw]
+    return [_parse_component(c) for c in _search_events(now, cutoff)]
 
 
 def _waking_window(events: list[Event]) -> tuple[datetime, datetime]:
-    """The 9am–9pm waking window for the relevant day.
-
-    The day is taken from the earliest event, or today if there are no events.
-    """
+    """The 9am–9pm waking window for the relevant day (from the earliest event)."""
     if events:
         day: date = min(e.start for e in events).astimezone(LOCAL_TZ).date()
     else:
@@ -215,14 +160,12 @@ def _waking_window(events: list[Event]) -> tuple[datetime, datetime]:
 def find_free_slots(events: list[Event], min_minutes: int = 20) -> list[TimeSlot]:
     """Find free gaps of at least `min_minutes` during waking hours (9am–9pm).
 
-    Each event is padded by a 30-minute buffer on both sides, all-day events
-    block the whole waking window, and overlapping busy blocks are merged before
-    the remaining gaps are returned.
+    Each event is padded by a 30-minute buffer, all-day events block the whole
+    window, and overlapping busy blocks are merged before the gaps are returned.
     """
     waking_start, waking_end = _waking_window(events)
     buffer = timedelta(minutes=EVENT_BUFFER_MINUTES)
 
-    # Build busy intervals, padded and clipped to the waking window.
     busy: list[tuple[datetime, datetime]] = []
     for e in events:
         if e.is_all_day:
@@ -237,7 +180,6 @@ def find_free_slots(events: list[Event], min_minutes: int = 20) -> list[TimeSlot
         if s < e:
             clipped.append((s, e))
 
-    # Merge overlapping/adjacent busy intervals.
     merged: list[tuple[datetime, datetime]] = []
     for s, e in sorted(clipped):
         if merged and s <= merged[-1][1]:
@@ -245,7 +187,6 @@ def find_free_slots(events: list[Event], min_minutes: int = 20) -> list[TimeSlot
         else:
             merged.append((s, e))
 
-    # Walk the gaps between busy blocks.
     min_gap = timedelta(minutes=min_minutes)
     slots: list[TimeSlot] = []
     cursor = waking_start
@@ -265,35 +206,34 @@ def _slot(start: datetime, end: datetime) -> TimeSlot:
     return TimeSlot(start=start, end=end, duration_minutes=minutes)
 
 
-def _restore_event_body(slot: TimeSlot, suggestion: str) -> dict:
-    """The Google Calendar event body for a 20-minute recovery block.
-
-    Factored out so callers (and the dry-run) can inspect exactly what would be
-    inserted without hitting the API.
-    """
+def _restore_event_ical(slot: TimeSlot, suggestion: str) -> str:
+    """The iCalendar text for a 20-minute recovery block. Pure — no network."""
     start = slot.start
     end = start + timedelta(minutes=RESTORE_BLOCK_MINUTES)
-    return {
-        "summary": f"🌿 Restore: {suggestion}",
-        "start": {"dateTime": start.isoformat(), "timeZone": "America/New_York"},
-        "end": {"dateTime": end.isoformat(), "timeZone": "America/New_York"},
-        "description": "Auto-created by Restore, your sleep-aware morning advisor.",
-    }
+    cal = icalendar.Calendar()
+    cal.add("prodid", "-//Restore//sleep-aware morning advisor//EN")
+    cal.add("version", "2.0")
+    ev = icalendar.Event()
+    ev.add("summary", f"🌿 Restore: {suggestion}")
+    ev.add("dtstart", start)
+    ev.add("dtend", end)
+    ev.add("dtstamp", datetime.now(LOCAL_TZ))
+    ev.add("uid", f"restore-{start.isoformat()}@restore.app")
+    ev.add("description", "Auto-created by Restore, your sleep-aware morning advisor.")
+    cal.add_component(ev)
+    return cal.to_ical().decode()
 
 
 def create_restore_block(slot: TimeSlot, suggestion: str) -> dict:
-    """Insert a 20-minute "🌿 Restore: <suggestion>" event and return it.
+    """Write a 20-minute "🌿 Restore: <suggestion>" event to iCloud and return it.
 
-    Writes into GOOGLE_CALENDAR_ID (default "primary"). Requires calendar write
-    scope (already in SCOPES) and a valid token. Raises on any API failure.
+    Requires ICLOUD_USERNAME / ICLOUD_APP_PASSWORD. Raises on any failure.
     """
-    body = _restore_event_body(slot, suggestion)
-    calendar_id = os.environ.get("GOOGLE_CALENDAR_ID", "primary")
-    log.info(
-        "Calendar API events.insert calendar=%s summary=%r start=%s",
-        calendar_id, body["summary"], body["start"]["dateTime"],
-    )
-    service = _calendar_service()
-    event = service.events().insert(calendarId=calendar_id, body=body).execute()
-    log.info("Created event id=%s link=%s", event.get("id"), event.get("htmlLink"))
-    return event
+    ical = _restore_event_ical(slot, suggestion)
+    log.info("CalDAV save_event: 🌿 Restore: %s at %s", suggestion, slot.start.isoformat())
+    cal = _open_calendar()
+    obj = cal.save_event(ical)
+    url = getattr(obj, "url", None)
+    log.info("Created iCloud event %s", url)
+    return {"summary": f"🌿 Restore: {suggestion}", "start": slot.start.isoformat(),
+            "url": str(url) if url else None}

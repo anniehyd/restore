@@ -22,7 +22,7 @@ Health Auto Export ──POST sleep JSON──▶ POST /wake (FastAPI, bearer-au
                     ┌─────────────────────┼───────────────────────┐
                     ▼                     ▼                        ▼
              parse sleep          read calendar             Claude API
-           (Health Auto          (Google Calendar)         (brief + restore
+           (Health Auto          (iCloud CalDAV)           (brief + restore
              Export JSON)                                    block proposal)
                     │                     │                        │
                     └─────────────────────┴────────────────────────┘
@@ -48,14 +48,13 @@ single Docker service.
 app/
   main.py            # FastAPI app + /wake, /latest, / , /health
   sleep.py           # parse Health Auto Export payload -> SleepSummary
-  calendar_client.py # Google Calendar read + write (Restore block)
+  calendar_client.py # iCloud Calendar read + write via CalDAV (Restore block)
   advisor.py         # Claude API call + prompt (structured JSON)
   notify.py          # ntfy push (fallback channel)
   telegram_client.py # Telegram Bot API sendMessage (primary channel)
   store.py           # last-brief snapshot (JSON file)
   demo_page.py       # the GET / demo page (self-contained HTML)
 scripts/
-  authorize.py       # one-time Google OAuth -> token.json + env-var block
   dry_run.py         # iterate on the advisor prompt against a fixture
   demo_reset.py      # prime the demo page with a known bad-night state
 tests/               # pytest with recorded fixture payloads
@@ -71,9 +70,10 @@ cp .env.example .env         # then fill in the values
 uvicorn app.main:app --reload
 ```
 
-- **Google Calendar:** put your OAuth client-secrets JSON at
-  `GOOGLE_CREDENTIALS_PATH`, then `python scripts/authorize.py` once (prints the
-  `GOOGLE_*` env vars to use in deployment).
+- **iCloud Calendar:** generate an app-specific password at appleid.apple.com
+  (Sign-In & Security → App-Specific Passwords) and set `ICLOUD_USERNAME` +
+  `ICLOUD_APP_PASSWORD`. Your calendar must live in iCloud. No OAuth, no token
+  files — the same two vars work locally and in deployment.
 - **Telegram:** create a bot with **@BotFather** (`/newbot`), grab the token,
   send your bot a message, then read your `chat.id` from
   `https://api.telegram.org/bot<TOKEN>/getUpdates`. Set `TELEGRAM_BOT_TOKEN` and
@@ -89,9 +89,9 @@ fallback. Each channel fails independently — a delivery hiccup never fails
 ## Configuration
 
 All secrets and config come from environment variables — see `.env.example`.
-Key ones: `ANTHROPIC_API_KEY`, `CLAUDE_MODEL`, the `GOOGLE_*` credentials,
-`CALENDAR_WRITE_ENABLED`, `PUSH_CHANNEL`, `TELEGRAM_BOT_TOKEN` /
-`TELEGRAM_CHAT_ID`, `NTFY_TOPIC`, and `WEBHOOK_SECRET`.
+Key ones: `ANTHROPIC_API_KEY`, `CLAUDE_MODEL`, `ICLOUD_USERNAME` /
+`ICLOUD_APP_PASSWORD`, `CALENDAR_WRITE_ENABLED`, `PUSH_CHANNEL`,
+`TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID`, `NTFY_TOPIC`, and `WEBHOOK_SECRET`.
 
 ## Deploy (Fly.io)
 
@@ -106,7 +106,7 @@ fly secrets set \
   TELEGRAM_CHAT_ID=123456789 \
   NTFY_TOPIC=restore-annie-x7k2p9 \
   WEBHOOK_SECRET="$WEBHOOK_SECRET" \
-  GOOGLE_CLIENT_ID=... GOOGLE_CLIENT_SECRET=... GOOGLE_REFRESH_TOKEN=... \
+  ICLOUD_USERNAME=you@icloud.com ICLOUD_APP_PASSWORD=abcd-efgh-ijkl-mnop \
   CALENDAR_WRITE_ENABLED=false
 fly deploy
 ```
@@ -119,7 +119,7 @@ fly deploy
 pytest
 ```
 
-Tests run against recorded fixture payloads; external services (Claude, Google,
+Tests run against recorded fixture payloads; external services (Claude, iCloud,
 Telegram, ntfy) are stubbed — no live device or network calls.
 
 End-to-end smoke test against a running server:

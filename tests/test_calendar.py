@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
+import icalendar
 import pytest
 
 from app import calendar_client as cal
@@ -67,40 +68,37 @@ def test_empty_day_is_one_big_slot():
     assert slots[0].duration_minutes == 720
 
 
-# --- get_today_events (API layer mocked) ------------------------------------
+# --- get_today_events (CalDAV layer mocked) ---------------------------------
+
+
+def _vevent(summary, dtstart, dtend):
+    """Build an icalendar VEVENT like caldav's .icalendar_component returns."""
+    ev = icalendar.Event()
+    if summary is not None:
+        ev.add("summary", summary)
+    ev.add("dtstart", dtstart)
+    ev.add("dtend", dtend)
+    return ev
 
 
 def test_get_today_events_parses_timed_and_all_day(monkeypatch):
-    raw = [
-        {
-            "summary": "Algorithms",
-            "start": {"dateTime": "2026-07-16T11:00:00-04:00"},
-            "end": {"dateTime": "2026-07-16T12:15:00-04:00"},
-        },
-        {
-            "summary": "Move-out day",
-            "start": {"date": "2026-07-16"},
-            "end": {"date": "2026-07-17"},
-        },
-        {
-            # no summary -> falls back to a placeholder title
-            "start": {"dateTime": "2026-07-16T14:00:00-04:00"},
-            "end": {"dateTime": "2026-07-16T15:00:00-04:00"},
-        },
+    comps = [
+        _vevent("Algorithms", _et(2026, 7, 16, 11, 0), _et(2026, 7, 16, 12, 15)),
+        _vevent("Move-out day", date(2026, 7, 16), date(2026, 7, 17)),  # all-day
+        _vevent(None, _et(2026, 7, 16, 14, 0), _et(2026, 7, 16, 15, 0)),  # no summary
     ]
 
     captured = {}
 
-    def fake_fetch(calendar_id, time_min, time_max):
-        captured["calendar_id"] = calendar_id
+    def fake_search(time_min, time_max):
         captured["time_min"] = time_min
         captured["time_max"] = time_max
-        return raw
+        return comps
 
-    monkeypatch.setattr(cal, "_fetch_raw_events", fake_fetch)
+    monkeypatch.setattr(cal, "_search_events", fake_search)
 
     now = _et(2026, 7, 16, 8, 0)
-    events = get_today_events(calendar_id="primary", now=now)
+    events = get_today_events(now=now)
 
     assert [e.title for e in events] == ["Algorithms", "Move-out day", "(no title)"]
     assert events[0].is_all_day is False
@@ -108,15 +106,23 @@ def test_get_today_events_parses_timed_and_all_day(monkeypatch):
     assert events[0].start == _et(2026, 7, 16, 11, 0)  # normalized to ET
 
     # window: from `now` to 11pm the same day
-    assert captured["calendar_id"] == "primary"
     assert captured["time_min"] == now
     assert captured["time_max"] == _et(2026, 7, 16, 23, 0)
 
 
 def test_get_today_events_after_cutoff_returns_empty(monkeypatch):
     def boom(*a, **k):  # must not be called
-        raise AssertionError("should not fetch after cutoff")
+        raise AssertionError("should not search after cutoff")
 
-    monkeypatch.setattr(cal, "_fetch_raw_events", boom)
+    monkeypatch.setattr(cal, "_search_events", boom)
     late = _et(2026, 7, 16, 23, 30)
     assert get_today_events(now=late) == []
+
+
+def test_restore_event_ical_shape():
+    from app.calendar_client import TimeSlot, _restore_event_ical
+    slot = TimeSlot(start=_et(2026, 7, 16, 15, 30), end=_et(2026, 7, 16, 17, 30), duration_minutes=120)
+    ical = _restore_event_ical(slot, "walk outside")
+    assert "SUMMARY:🌿 Restore: walk outside" in ical
+    assert "DTSTART" in ical and "20260716T153000" in ical
+    assert "DTEND" in ical and "20260716T155000" in ical  # 20-min block, not the full slot
