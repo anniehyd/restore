@@ -1,4 +1,4 @@
-"""Restore — FastAPI app and webhook endpoint.
+"""AnAn — FastAPI app and webhook endpoint.
 
   - GET  /health  liveness check
   - POST /wake    the full morning flow:
@@ -52,7 +52,7 @@ logging.basicConfig(
 )
 log = logging.getLogger("restore")
 
-app = FastAPI(title="Restore", description="Sleep-aware morning advisor")
+app = FastAPI(title="AnAn", description="Sleep-aware morning companion")
 
 
 @app.get("/health")
@@ -337,7 +337,7 @@ def _fallback_brief(sleep: SleepSummary) -> str:
 
 
 def _push_title(sleep: SleepSummary) -> str:
-    return f"Restore — {sleep.quality_flag} night"
+    return f"AnAn — {sleep.quality_flag} night"
 
 
 def _book_markup(slot_label: str) -> dict:

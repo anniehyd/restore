@@ -161,7 +161,7 @@ def test_root_serves_html():
     resp = client.get("/")
     assert resp.status_code == 200
     assert "text/html" in resp.headers["content-type"]
-    assert "Restore" in resp.text
+    assert "AnAn" in resp.text
 
 
 def test_latest_404_when_no_snapshot():
@@ -335,7 +335,7 @@ def test_push_channel_both_uses_both(monkeypatch, bad_night, stub_pipeline):
     body = client.post("/wake", json=bad_night).json()
     assert body["delivered"] == {"telegram": True, "ntfy": True}
     assert stub_pipeline["telegram"] == ["STUB BRIEF"]
-    assert stub_pipeline["ntfy"] == [("Restore — poor night", "STUB BRIEF")]
+    assert stub_pipeline["ntfy"] == [("AnAn — poor night", "STUB BRIEF")]
 
 
 def test_push_channel_ntfy_only(monkeypatch, bad_night, stub_pipeline):

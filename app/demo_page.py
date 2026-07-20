@@ -10,7 +10,7 @@ DEMO_HTML = r'''<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Restore</title>
+<title>AnAn</title>
 <style>
   :root {
     color-scheme: light dark;
@@ -83,7 +83,7 @@ DEMO_HTML = r'''<!doctype html>
   <div class="empty" id="empty">Loading…</div>
   <div id="content" hidden>
     <header>
-      <div><h1>🌿 Restore</h1><div class="updated" id="updated"></div></div>
+      <div><h1>🌿 AnAn</h1><div class="updated" id="updated"></div></div>
       <span class="badge" id="badge"></span>
     </header>
 

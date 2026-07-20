@@ -1,4 +1,4 @@
-# Restore
+# AnAn (安安 — "rest and peace"; formerly "Restore")
 
 A personal, sleep-aware morning advisor. When I wake up, it reads last night's
 sleep, looks at today's calendar, and pushes a short, actionable morning brief
