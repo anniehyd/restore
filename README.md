@@ -2,11 +2,13 @@
 
 [![tests](https://github.com/anniehyd/restore/actions/workflows/ci.yml/badge.svg)](https://github.com/anniehyd/restore/actions/workflows/ci.yml)
 
-A personal, sleep-aware morning advisor. When my Sleep Focus ends, an iOS
-Shortcut (via Health Auto Export) POSTs last night's sleep data to a webhook;
-Restore reads my sleep and today's calendar, then sends a short morning brief as
-a chat from a cute **Telegram** companion — and, on rough mornings, drops a
-20-minute recovery block into my calendar.
+Some mornings I wake up ready to conquer the world. Others, I'm so cooked before 9am — and I never know which one I'm getting.
+
+I used to wake up almost every hour, and that randomness quietly wrecks my focus and decision-making all day.
+
+So I built Rise: a little companion that actually knows how I slept.
+
+When my Sleep Focus ends, an iOS Shortcut quietly ships last night's sleep data to Rise. It cross-checks that against today's calendar and pings me on Telegram with a short, human morning brief. Rough night? It slips a 20-minute recovery block into my calendar before the day runs me over.
 
 ## The brief
 
