@@ -4,7 +4,7 @@
 
 Some mornings I wake up ready for everything. Others, I feel so cooked before 9am — and I never know which one I'm getting.
 
-I used to wake up almost every hour, and that randomness quietly wrecks my focus and decision-making all day.
+I used to wake up almost every hour, and that randomness wrecks my focus and decision-making all day.
 So I built Rise: a little companion that actually knows how I slept.
 
 When my Sleep Focus ends, an iOS Shortcut quietly ships last night's sleep data to Rise. It cross-checks that against today's calendar and pings me on Telegram with a short, human morning brief. Rough night? It slips a 20-minute recovery block into my calendar before the day runs me over.
