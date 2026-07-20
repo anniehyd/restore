@@ -19,7 +19,8 @@ _VIBES = {
 
 
 def name() -> str:
-    return os.environ.get("COMPANION_NAME", "Sprout")
+    # 安安 (ānān) — "rest and peace". Override with COMPANION_NAME.
+    return os.environ.get("COMPANION_NAME", "anan")
 
 
 def emoji() -> str:
@@ -36,7 +37,7 @@ def playfulness() -> int:
 
 def telegram_url() -> str:
     """t.me link to the bot, or '' if the username isn't configured."""
-    user = os.environ.get("COMPANION_TELEGRAM_USERNAME", "").lstrip("@")
+    user = os.environ.get("COMPANION_TELEGRAM_USERNAME", "ananrestbot").lstrip("@")
     return f"https://t.me/{user}" if user else ""
 
 
