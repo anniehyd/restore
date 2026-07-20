@@ -1,4 +1,4 @@
-# Restore
+# Rise
 
 [![tests](https://github.com/anniehyd/restore/actions/workflows/ci.yml/badge.svg)](https://github.com/anniehyd/restore/actions/workflows/ci.yml)
 
