@@ -41,6 +41,17 @@ def telegram_url() -> str:
     return f"https://t.me/{user}" if user else ""
 
 
+def whatsapp_url() -> str:
+    """wa.me link to the bot's number, or '' if it isn't configured."""
+    number = os.environ.get("COMPANION_WHATSAPP_NUMBER", "").lstrip("+")
+    return f"https://wa.me/{number}" if number else ""
+
+
+def chat_url() -> str:
+    """The '💬 chat' link for the demo page: WhatsApp if configured, else Telegram."""
+    return whatsapp_url() or telegram_url()
+
+
 def prompt() -> str:
     """The persona line injected into both system prompts."""
     p = playfulness()

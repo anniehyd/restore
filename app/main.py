@@ -17,15 +17,25 @@ against the real free-slot list before anything is written.
 
 from __future__ import annotations
 
+import hashlib
 import hmac
+import json
 import logging
 import os
 from datetime import datetime
 from typing import Optional
 from zoneinfo import ZoneInfo
 
-from fastapi import BackgroundTasks, Body, FastAPI, Header, HTTPException, Query
-from fastapi.responses import HTMLResponse
+from fastapi import (
+    BackgroundTasks,
+    Body,
+    FastAPI,
+    Header,
+    HTTPException,
+    Query,
+    Request,
+)
+from fastapi.responses import HTMLResponse, PlainTextResponse
 from pydantic import ValidationError
 
 from app import demo_seed, persona, store
@@ -43,6 +53,7 @@ from app.sleep import SleepSummary, parse_sleep
 from app.store import RESTORE_BLOCK_MINUTES
 from app.telegram_client import answer_callback, edit_message_text
 from app.telegram_client import send_message as send_telegram
+from app.whatsapp_client import send_message as send_whatsapp
 
 LOCAL_TZ = ZoneInfo("America/New_York")
 
@@ -79,7 +90,7 @@ def demo_page(k: Optional[str] = Query(default=None)) -> str:
     """Single-file demo page (fetches /latest client-side). Gated by PAGE_TOKEN."""
     _check_page_token(k)
     return (DEMO_HTML
-            .replace("__BOT_URL__", persona.telegram_url())
+            .replace("__BOT_URL__", persona.chat_url())
             .replace("__BOT_NAME__", persona.name())
             .replace("__PAGE_TOKEN__", os.environ.get("PAGE_TOKEN", "")))
 
@@ -159,19 +170,22 @@ def _require_telegram_secret(token: Optional[str]) -> None:
         raise HTTPException(status_code=403, detail="forbidden")
 
 
-def _handle_telegram_reply(user_text: str) -> None:
-    """Background worker: generate a reply, send it, remember the exchange."""
+def _handle_reply(user_text: str, send) -> None:
+    """Background worker: generate a reply, send it, remember the exchange.
+
+    `send` is the channel's plain-text send callable (Telegram or WhatsApp).
+    """
     try:
         snapshot = store.load_snapshot()
         context = _chat_context(snapshot)
         conversation = store.get_conversation()
         reply = generate_reply(user_text, context=context, conversation=conversation)
-        send_telegram(reply)
+        send(reply)
         store.append_exchange(user_text, reply)
     except Exception as exc:  # noqa: BLE001 — background task; must not crash silently
-        log.error("Telegram reply failed: %s", exc)
+        log.error("Chat reply failed: %s", exc)
         try:
-            send_telegram("my brain's a little foggy right now ☁️ try me again in a sec")
+            send("my brain's a little foggy right now ☁️ try me again in a sec")
         except Exception:  # noqa: BLE001
             pass
 
@@ -213,21 +227,25 @@ def _demo_mode() -> bool:
     return os.environ.get("DEMO_MODE", "false").strip().lower() in ("1", "true", "yes", "on")
 
 
-def _handle_command(cmd: str) -> None:
-    """Background worker for /today, /sleep, /reset."""
+def _handle_command(cmd: str, send, send_book) -> None:
+    """Background worker for /today, /sleep, /reset.
+
+    `send` sends plain text; `send_book(text, slot_label)` sends text with the
+    channel's book/skip buttons attached.
+    """
     try:
         if cmd == "today":
-            send_telegram(_today_text())
+            send(_today_text())
         elif cmd == "sleep":
-            send_telegram(_sleep_text())
+            send(_sleep_text())
         elif cmd == "reset":
             if not _demo_mode():
-                send_telegram("reset is off right now 🌱 (set DEMO_MODE=true to enable it)")
+                send("reset is off right now 🌱 (set DEMO_MODE=true to enable it)")
             else:
                 seed = demo_seed.seed(_now())  # re-prime the bad-night demo
-                send_telegram(seed["brief"], _book_markup(seed["slot_label"]))
+                send_book(seed["brief"], seed["slot_label"])
         else:
-            send_telegram("i don't know that one 🌱 but you can just talk to me 💬")
+            send("i don't know that one 🌱 but you can just talk to me 💬")
     except Exception as exc:  # noqa: BLE001 — background task
         log.error("Command /%s failed: %s", cmd, exc)
 
@@ -279,6 +297,14 @@ def _handle_callback(cq: dict) -> None:
             pass
 
 
+def _tg_send_book(text: str, slot_label: str) -> None:
+    send_telegram(text, _book_markup(slot_label))
+
+
+def _wa_send_book(text: str, slot_label: str) -> None:
+    send_whatsapp(text, _wa_book_buttons(slot_label))
+
+
 @app.post("/telegram")
 def telegram_webhook(
     background_tasks: BackgroundTasks,
@@ -320,10 +346,134 @@ def telegram_webhook(
         return {"ok": True}
     if text.startswith("/"):
         cmd = text[1:].split()[0].split("@")[0].lower()
-        background_tasks.add_task(_handle_command, cmd)
+        background_tasks.add_task(_handle_command, cmd, send_telegram, _tg_send_book)
     else:
-        background_tasks.add_task(_handle_telegram_reply, text)
+        background_tasks.add_task(_handle_reply, text, send_telegram)
     return {"ok": True}
+
+
+# --- WhatsApp conversational webhook (Meta Cloud API) ------------------------
+
+
+def _wa_book_buttons(slot_label: str) -> list[dict]:
+    """WhatsApp quick-reply buttons: book the Restore block, or dismiss it."""
+    return [
+        {"id": "book", "title": f"🌿 book {slot_label}"},
+        {"id": "skip", "title": "not today"},
+    ]
+
+
+def _handle_whatsapp_button(button_id: str) -> None:
+    """Background worker for the morning buttons (book / skip).
+
+    WhatsApp can't edit sent messages the way Telegram does, so confirmations
+    go out as fresh messages instead.
+    """
+    try:
+        if button_id == "book":
+            restore = (store.load_snapshot() or {}).get("restore")
+            if not restore:
+                send_whatsapp("hmm, nothing to book 🌱")
+                return
+            label = restore.get("start_label", "")
+            activity = restore.get("activity", "a break")
+            if not _calendar_write_enabled():  # respect the flag
+                send_whatsapp(f"🌱 would protect {label} for {activity} "
+                              "(calendar writes are off, demo-safe)")
+                return
+            slot = TimeSlot(
+                start=datetime.fromisoformat(restore["start_iso"]),
+                end=datetime.fromisoformat(restore["end_iso"]),
+                duration_minutes=RESTORE_BLOCK_MINUTES,
+            )
+            create_restore_block(slot, activity)
+            store.mark_restore_booked()  # flips the demo page block to solid
+            send_whatsapp(f"✅ protected {label} for {activity} 🌿")
+        elif button_id == "skip":
+            send_whatsapp("no worries 💛 — not today")
+    except Exception as exc:  # noqa: BLE001 — background task
+        log.error("WhatsApp button handling failed: %s", exc)
+        try:
+            send_whatsapp("hmm, that didn't go through 😞")
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _verify_whatsapp_signature(raw_body: bytes, signature: Optional[str]) -> None:
+    """Verify Meta's X-Hub-Signature-256 header (HMAC-SHA256 of the raw body)."""
+    secret = os.environ.get("WHATSAPP_APP_SECRET")
+    if not secret:
+        log.warning("WHATSAPP_APP_SECRET not set; /whatsapp is UNVERIFIED")
+        return
+    expected = "sha256=" + hmac.new(
+        secret.encode(), raw_body, hashlib.sha256
+    ).hexdigest()
+    if not hmac.compare_digest(signature or "", expected):
+        log.warning("Rejected /whatsapp: bad signature")
+        raise HTTPException(status_code=403, detail="forbidden")
+
+
+@app.get("/whatsapp")
+def whatsapp_verify(
+    mode: Optional[str] = Query(default=None, alias="hub.mode"),
+    token: Optional[str] = Query(default=None, alias="hub.verify_token"),
+    challenge: Optional[str] = Query(default=None, alias="hub.challenge"),
+) -> PlainTextResponse:
+    """Meta's one-time webhook verification handshake: echo hub.challenge back."""
+    expected = os.environ.get("WHATSAPP_VERIFY_TOKEN")
+    if mode == "subscribe" and expected and hmac.compare_digest(token or "", expected):
+        return PlainTextResponse(challenge or "")
+    raise HTTPException(status_code=403, detail="forbidden")
+
+
+@app.post("/whatsapp")
+async def whatsapp_webhook(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    x_hub_signature_256: Optional[str] = Header(default=None),
+) -> dict:
+    """WhatsApp webhook. Acknowledges immediately; does the work in the background.
+
+    Fast ack + message-id dedupe prevents Meta's slow-webhook retries from
+    producing duplicate replies or double-bookings. Delivery/read receipts
+    ("statuses") are ignored.
+    """
+    raw = await request.body()
+    _verify_whatsapp_signature(raw, x_hub_signature_256)
+    try:
+        update = json.loads(raw)
+    except ValueError:
+        return {"ok": True}
+
+    for entry in update.get("entry", []):
+        for change in entry.get("changes", []):
+            for msg in (change.get("value") or {}).get("messages", []):
+                _dispatch_whatsapp_message(msg, background_tasks)
+    return {"ok": True}
+
+
+def _dispatch_whatsapp_message(msg: dict, background_tasks: BackgroundTasks) -> None:
+    owner = os.environ.get("WHATSAPP_TO", "").lstrip("+")
+    sender = (msg.get("from") or "").lstrip("+")
+    if owner and sender != owner:
+        log.info("Ignoring WhatsApp message from %s (not owner)", sender)
+        return
+    if not store.mark_update_seen(msg.get("id")):
+        log.info("Duplicate WhatsApp message %s ignored", msg.get("id"))
+        return
+
+    if msg.get("type") == "interactive":
+        reply = (msg.get("interactive") or {}).get("button_reply") or {}
+        background_tasks.add_task(_handle_whatsapp_button, reply.get("id"))
+        return
+    text = (msg.get("text") or {}).get("body")
+    if not text:
+        return
+    if text.startswith("/"):
+        cmd = text[1:].split()[0].lower()
+        background_tasks.add_task(_handle_command, cmd, send_whatsapp, _wa_send_book)
+    else:
+        background_tasks.add_task(_handle_reply, text, send_whatsapp)
 
 
 def _fallback_brief(sleep: SleepSummary) -> str:
@@ -348,23 +498,35 @@ def _book_markup(slot_label: str) -> dict:
     ]]}
 
 
-def _deliver(title: str, message: str, reply_markup: Optional[dict] = None) -> dict:
+def _deliver(title: str, message: str, reply_markup: Optional[dict] = None,
+             slot_label: Optional[str] = None) -> dict:
     """Send the brief over the configured channel(s). Never raises — each
-    channel's failure is logged and reported so /wake always returns. The inline
-    keyboard (if any) is Telegram-only.
+    channel's failure is logged and reported so /wake always returns.
 
-    PUSH_CHANNEL: "telegram" (default), "ntfy", or "both".
+    PUSH_CHANNEL: "telegram" (default), "whatsapp", "ntfy", "both"
+    (= telegram+ntfy), or any comma-separated mix, e.g. "whatsapp,ntfy".
     """
-    channel = os.environ.get("PUSH_CHANNEL", "telegram").strip().lower()
+    raw = os.environ.get("PUSH_CHANNEL", "telegram").strip().lower()
+    channels = {"telegram", "ntfy"} if raw == "both" else {
+        c.strip() for c in raw.split(",") if c.strip()
+    }
     delivered: dict = {}
-    if channel in ("telegram", "both"):
+    if "telegram" in channels:
         try:
             send_telegram(message, reply_markup)
             delivered["telegram"] = True
         except Exception as exc:  # noqa: BLE001 — resilience path; logged
             log.error("Telegram send failed: %s", exc)
             delivered["telegram"] = False
-    if channel in ("ntfy", "both"):
+    if "whatsapp" in channels:
+        try:
+            buttons = _wa_book_buttons(slot_label) if slot_label else None
+            send_whatsapp(message, buttons)
+            delivered["whatsapp"] = True
+        except Exception as exc:  # noqa: BLE001 — resilience path; logged
+            log.error("WhatsApp send failed: %s", exc)
+            delivered["whatsapp"] = False
+    if "ntfy" in channels:
         try:
             send_push(title, message)
             delivered["ntfy"] = True
@@ -372,7 +534,7 @@ def _deliver(title: str, message: str, reply_markup: Optional[dict] = None) -> d
             log.error("ntfy push failed: %s", exc)
             delivered["ntfy"] = False
     if not delivered:
-        log.warning("Unknown PUSH_CHANNEL=%r; nothing delivered", channel)
+        log.warning("Unknown PUSH_CHANNEL=%r; nothing delivered", raw)
     return delivered
 
 
@@ -447,12 +609,14 @@ def wake(
     restore_proposed = None
     restore_bookable = False
     markup = None
+    slot_label = None
     if proposed is not None:
         restore_proposed = {"start": proposed.start.isoformat(), "activity": proposed.activity}
         slot = _match_slot(proposed.start, free_slots)
         if sleep.quality_flag in RESTORE_FLAGS and slot is not None:
             restore_bookable = True
-            markup = _book_markup(_clock(slot.start))
+            slot_label = _clock(slot.start)
+            markup = _book_markup(slot_label)
         else:
             log.info(
                 "Restore proposal not bookable (quality=%s, slot_matched=%s)",
@@ -460,7 +624,7 @@ def wake(
             )
 
     # Delivery is best-effort: a failure still returns the brief in the response.
-    delivered = _deliver(_push_title(sleep), brief, markup)
+    delivered = _deliver(_push_title(sleep), brief, markup, slot_label)
 
     # Persist a snapshot for /latest and the demo page (block starts un-booked).
     restore_for_snapshot = None

@@ -211,7 +211,7 @@ def test_telegram_ignores_other_chat(monkeypatch):
     monkeypatch.setenv("TELEGRAM_WEBHOOK_SECRET", "wh")
     monkeypatch.setenv("TELEGRAM_CHAT_ID", "42")
     called = []
-    monkeypatch.setattr(main, "_handle_telegram_reply", lambda text: called.append(text))
+    monkeypatch.setattr(main, "_handle_reply", lambda text, send: called.append(text))
     r = client.post("/telegram", json=_tg_update(2, "hi", chat_id=999),
                     headers={"X-Telegram-Bot-Api-Secret-Token": "wh"})
     assert r.status_code == 200 and called == []
@@ -222,7 +222,7 @@ def test_telegram_dedupes_update_id(monkeypatch):
     monkeypatch.setenv("TELEGRAM_WEBHOOK_SECRET", "wh")
     monkeypatch.setenv("TELEGRAM_CHAT_ID", "42")
     called = []
-    monkeypatch.setattr(main, "_handle_telegram_reply", lambda text: called.append(text))
+    monkeypatch.setattr(main, "_handle_reply", lambda text, send: called.append(text))
     hdr = {"X-Telegram-Bot-Api-Secret-Token": "wh"}
     client.post("/telegram", json=_tg_update(7, "hi"), headers=hdr)
     client.post("/telegram", json=_tg_update(7, "hi"), headers=hdr)  # retry, same id
