@@ -17,6 +17,7 @@ against the real free-slot list before anything is written.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import json
@@ -38,7 +39,7 @@ from fastapi import (
 from fastapi.responses import HTMLResponse, PlainTextResponse
 from pydantic import ValidationError
 
-from app import demo_seed, persona, store
+from app import demo_seed, persona, store, weather
 from app.advisor import RESTORE_FLAGS, generate_brief, generate_reply
 from app.calendar_client import (
     Event,
@@ -70,6 +71,76 @@ app = FastAPI(title="AnAn", description="Sleep-aware morning companion")
 def health() -> dict:
     """Liveness check."""
     return {"status": "ok"}
+
+
+# --- Weather + AQI alert scheduler -------------------------------------------
+#
+# The repo has no external cron — the server is always-on, so a lightweight
+# asyncio loop checks the ET clock every minute. Silence by default: normal
+# weather sends nothing. All failures are logged and never messaged.
+
+WEATHER_AQI_HOURS = (8, 10, 12, 14, 16, 18, 20)  # every 2h, 8 AM-8 PM ET
+WEATHER_MORNING_HOUR = 7
+
+
+def _weather_alerts_enabled() -> bool:
+    return os.environ.get("WEATHER_ALERTS_ENABLED", "true").strip().lower() in (
+        "1", "true", "yes", "on",
+    )
+
+
+def _weather_send(message: str) -> None:
+    """Deliver an alert over Telegram; a failure is logged, never surfaced."""
+    try:
+        _tg_send_chunked(message)
+    except Exception as exc:  # noqa: BLE001 — fail silently per design
+        log.error("Weather alert send failed: %s", exc)
+
+
+def _weather_tick(now: Optional[datetime] = None) -> None:
+    """One scheduler pass: 7 AM morning check + 2-hourly AQI check."""
+    now = now or datetime.now(LOCAL_TZ)
+    today = now.date().isoformat()
+    ws = store.get_weather_state()
+
+    if now.hour == WEATHER_MORNING_HOUR and ws.get("morning_date") != today:
+        ws["morning_date"] = today  # one attempt per day, sent or silent
+        store.set_weather_state(ws)
+        message = weather.build_morning_alert(now)
+        if message:
+            log.info("Morning weather alert firing")
+            _weather_send(message)
+        else:
+            log.info("Morning weather check: all clear, staying silent")
+
+    if now.hour in WEATHER_AQI_HOURS:
+        run_key = f"{today}T{now.hour:02d}"
+        if ws.get("last_aqi_run") != run_key:
+            ws["last_aqi_run"] = run_key
+            aqi = weather.fetch_current_aqi(now)
+            if aqi is not None:
+                message, aqi_state = weather.evaluate_aqi(aqi, ws.get("aqi", {}), today)
+                ws["aqi"] = aqi_state
+                if message:
+                    log.info("AQI alert firing (aqi=%s)", aqi)
+                    _weather_send(message)
+            store.set_weather_state(ws)
+
+
+async def _weather_loop() -> None:
+    log.info("Weather alert scheduler started (60s tick, tz=%s)", LOCAL_TZ)
+    while True:
+        await asyncio.sleep(60)  # sleep first: no tick during test startup
+        try:
+            await asyncio.to_thread(_weather_tick)
+        except Exception as exc:  # noqa: BLE001 — the loop must never die
+            log.error("Weather tick failed: %s", exc)
+
+
+@app.on_event("startup")
+async def _start_weather_scheduler() -> None:
+    if _weather_alerts_enabled():
+        asyncio.create_task(_weather_loop())
 
 
 def _check_page_token(k: Optional[str]) -> None:

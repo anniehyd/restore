@@ -29,7 +29,7 @@ from zoneinfo import ZoneInfo
 from anthropic import Anthropic
 from pydantic import BaseModel
 
-from app import persona
+from app import persona, weather
 from app.calendar_client import Event, TimeSlot
 from app.sleep import SleepSummary
 
@@ -92,6 +92,13 @@ Never one long paragraph. Example shape: greeting bubble → last-night bubble \
 - Frame everything as scheduling and energy management. You are NOT a doctor: \
 never give medical, diagnostic, or treatment advice, and never name health \
 conditions.
+- The payload may include "current_conditions" (aqi, aqi_band, rain_next_3h, \
+snow_next_3h, feels_like_f). Before suggesting any OUTDOOR moment (walk, \
+errand, fresh air), check it: if aqi_band is "soft" or "bad", rain or snow is \
+likely within 3 hours, or the feels-like temp is extreme, suggest a cozy \
+indoor alternative instead (tea, stretching, a nap, music) and mention why in \
+passing ("air's not great today, so..."). If current_conditions is missing or \
+null, suggest freely.
 
 Setting the "restore_block" field:
 - If quality_flag is "good": set restore_block to null.
@@ -122,6 +129,12 @@ Rules:
   give a numbered list of tips.
 - For timing questions (nap, break, moving something), anchor to a REAL free slot
   or event from the context, naming the exact clock time. Never invent a time.
+- The context may include "current_conditions" (aqi, aqi_band, rain_next_3h,
+  snow_next_3h, feels_like_f). Before suggesting anything OUTDOOR (walk, run,
+  errand), check it: if aqi_band is "soft" or "bad", rain/snow is likely within
+  3 hours, or the feels-like temp is extreme, steer to an indoor alternative and
+  say why, gently ("it's pouring soon, maybe stretch inside instead 🧡"). If
+  current_conditions is missing or null, suggest freely.
 - You are NOT a doctor: frame everything as scheduling and energy management,
   never medical/diagnostic advice, never name conditions. If they sound genuinely
   unwell, be kind, suggest rest, and gently point them to a real professional.
@@ -138,6 +151,7 @@ def generate_reply(user_text: str, *, context: dict, conversation: list,
     the morning brief is carried in `context`, not as a message turn.
     """
     client = Anthropic()
+    context = {**context, "current_conditions": _safe_conditions()}
     system = (persona.prompt() + "\n\n" + CHAT_SYSTEM_PROMPT
               + "\n\nContext (JSON):\n" + json.dumps(context, indent=2))
 
@@ -162,6 +176,15 @@ def generate_reply(user_text: str, *, context: dict, conversation: list,
     text = "".join(b.text for b in response.content if b.type == "text").strip()
     log.info("Chat reply generated (%d chars, request_id=%s)", len(text), response._request_id)
     return text
+
+
+def _safe_conditions() -> Optional[dict]:
+    """Current weather/AQI for the prompt context; never raises."""
+    try:
+        return weather.get_current_conditions()
+    except Exception as exc:  # noqa: BLE001 — conditions are optional context
+        log.warning("Could not fetch current conditions: %s", exc)
+        return None
 
 
 def _time_label(dt: datetime) -> str:
@@ -204,6 +227,7 @@ def _build_payload(sleep: SleepSummary, events: list[Event], free_slots: list[Ti
             }
             for s in free_slots
         ],
+        "current_conditions": _safe_conditions(),
     }
 
 
