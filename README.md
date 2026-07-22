@@ -1,5 +1,5 @@
 # AnAn
- (安安 in Chinese means peace and rest) @ananrestbot
+ (安安 in Chinese means peace and rest)
 
 [![tests](https://github.com/anniehyd/restore/actions/workflows/ci.yml/badge.svg)](https://github.com/anniehyd/restore/actions/workflows/ci.yml)
 
@@ -34,11 +34,12 @@ Health Auto Export ──POST sleep JSON──▶ POST /wake (FastAPI, bearer-au
                         ┌─────────────────┼─────────────────┐
                         ▼                 ▼                 ▼
                  send Telegram     (if poor sleep)     save snapshot
-                 (or ntfy/both)    write Restore       for GET / + /latest
-                                   block to calendar
+                 (or WhatsApp/     write Restore       for GET / + /latest
+                  ntfy)            block to calendar
 ```
 
-Endpoints: `POST /wake` (the flow), `GET /latest` (last brief as JSON),
+Endpoints: `POST /wake` (the flow), `POST /telegram` (chat webhook),
+`GET+POST /whatsapp` (chat webhook), `GET /latest` (last brief as JSON),
 `GET /` (a single-file demo page), `GET /health`.
 
 ## Stack
@@ -56,6 +57,7 @@ app/
   advisor.py         # Claude API call + prompt (structured JSON)
   notify.py          # ntfy push (fallback channel)
   telegram_client.py # Telegram Bot API sendMessage (primary channel)
+  whatsapp_client.py # Meta WhatsApp Cloud API send (alternate channel)
   store.py           # last-brief snapshot (JSON file)
   demo_page.py       # the GET / demo page (self-contained HTML)
 scripts/
@@ -81,21 +83,52 @@ uvicorn app.main:app --reload
 - **Telegram:** create a bot with **@BotFather** (`/newbot`), grab the token,
   send your bot a message, then read your `chat.id` from
   `https://api.telegram.org/bot<TOKEN>/getUpdates`. Set `TELEGRAM_BOT_TOKEN` and
-  `TELEGRAM_CHAT_ID`.
+  `TELEGRAM_CHAT_ID`. For chat replies, register the webhook with
+  `scripts/set_telegram_webhook.py` once deployed.
 
 ## Delivery channels
 
-`PUSH_CHANNEL` selects where the brief goes: `telegram` (default), `ntfy`, or
-`both`. Telegram is the chat-companion experience; ntfy is kept as a demo
-fallback. Each channel fails independently — a delivery hiccup never fails
-`/wake`.
+`PUSH_CHANNEL` selects where the brief goes: `telegram` (default), `whatsapp`,
+`ntfy`, `both` (= telegram+ntfy), or a comma list like `telegram,ntfy`.
+Telegram is the chat-companion experience; ntfy is kept as a demo fallback.
+Each channel fails independently — a delivery hiccup never fails `/wake`.
+
+### WhatsApp (optional alternate, Meta Cloud API)
+
+Requires a Meta developer account at
+[developers.facebook.com](https://developers.facebook.com): create a
+**Business**-type app and add the **WhatsApp** product.
+
+1. On **WhatsApp → API Setup** you get a free **test number**: copy its
+   **Phone number ID** into `WHATSAPP_PHONE_NUMBER_ID`, and add your own phone
+   as a verified recipient. Put your number (digits only, with country code)
+   in `WHATSAPP_TO`.
+2. The dashboard's temporary token expires in 24h. For a permanent one:
+   **Business Settings → Users → System Users** → create a system user, assign
+   the app, generate a token with `whatsapp_business_messaging` — that's
+   `WHATSAPP_ACCESS_TOKEN`.
+3. **Webhook (chat + buttons):** on **WhatsApp → Configuration**, set the
+   callback URL to `https://<your-app>.fly.dev/whatsapp`, enter the same
+   string you put in `WHATSAPP_VERIFY_TOKEN`, and subscribe to the
+   **messages** field. Set `WHATSAPP_APP_SECRET` (App **Settings → Basic**) so
+   the server can verify Meta's signature on each delivery.
+4. Smoke-test with `python scripts/check_whatsapp.py`, then set
+   `PUSH_CHANNEL=whatsapp`.
+
+**The 24-hour window rule:** WhatsApp only allows free-form bot messages
+within 24h of *your* last message to it. If a morning brief hits a closed
+window, AnAn sends the pre-approved template named in `WHATSAPP_TEMPLATE_NAME`
+— replying reopens the window. Unlike Telegram, WhatsApp can't edit sent
+messages, so booking confirmations arrive as new messages. (Telegram has none
+of these limits — bot messages work any time.)
 
 ## Configuration
 
 All secrets and config come from environment variables — see `.env.example`.
 Key ones: `ANTHROPIC_API_KEY`, `CLAUDE_MODEL`, `ICLOUD_USERNAME` /
 `ICLOUD_APP_PASSWORD`, `CALENDAR_WRITE_ENABLED`, `PUSH_CHANNEL`,
-`TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID`, `NTFY_TOPIC`, and `WEBHOOK_SECRET`.
+`TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID`, `NTFY_TOPIC`, and `WEBHOOK_SECRET`
+(WhatsApp vars only if you opt into that channel).
 
 ## Deploy (Fly.io)
 
@@ -108,6 +141,7 @@ fly secrets set \
   PUSH_CHANNEL=telegram \
   TELEGRAM_BOT_TOKEN=8123456789:AA... \
   TELEGRAM_CHAT_ID=123456789 \
+  TELEGRAM_WEBHOOK_SECRET=$(openssl rand -hex 24) \
   NTFY_TOPIC=restore-annie-x7k2p9 \
   WEBHOOK_SECRET="$WEBHOOK_SECRET" \
   ICLOUD_USERNAME=you@icloud.com ICLOUD_APP_PASSWORD=abcd-efgh-ijkl-mnop \
@@ -124,7 +158,7 @@ pytest
 ```
 
 Tests run against recorded fixture payloads; external services (Claude, iCloud,
-Telegram, ntfy) are stubbed — no live device or network calls.
+WhatsApp, Telegram, ntfy) are stubbed — no live device or network calls.
 
 End-to-end smoke test against a running server:
 

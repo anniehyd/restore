@@ -136,8 +136,9 @@ def load_snapshot() -> Optional[dict]:
     return _read_state().get("snapshot")
 
 
-def mark_update_seen(update_id: int) -> bool:
-    """Record a Telegram update_id. Returns True if new, False if already seen."""
+def mark_update_seen(update_id) -> bool:
+    """Record a webhook update id (Telegram int or WhatsApp wamid string).
+    Returns True if new, False if already seen."""
     with _LOCK:
         state = _read_state()
         seen = state["seen_update_ids"]
