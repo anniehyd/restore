@@ -297,12 +297,34 @@ def _handle_callback(cq: dict) -> None:
             pass
 
 
+def _split_brief(text: str) -> list[str]:
+    """Split a brief into its chat bubbles (blank-line separated chunks)."""
+    parts = [p.strip() for p in text.split("\n\n") if p.strip()]
+    return parts or [text]
+
+
+def _tg_send_chunked(text: str, reply_markup: Optional[dict] = None) -> None:
+    """Send each bubble as its own Telegram message; buttons ride the last one."""
+    parts = _split_brief(text)
+    for part in parts[:-1]:
+        send_telegram(part)
+    send_telegram(parts[-1], reply_markup)
+
+
+def _wa_send_chunked(text: str, buttons: Optional[list] = None) -> None:
+    """Send each bubble as its own WhatsApp message; buttons ride the last one."""
+    parts = _split_brief(text)
+    for part in parts[:-1]:
+        send_whatsapp(part)
+    send_whatsapp(parts[-1], buttons)
+
+
 def _tg_send_book(text: str, slot_label: str) -> None:
-    send_telegram(text, _book_markup(slot_label))
+    _tg_send_chunked(text, _book_markup(slot_label))
 
 
 def _wa_send_book(text: str, slot_label: str) -> None:
-    send_whatsapp(text, _wa_book_buttons(slot_label))
+    _wa_send_chunked(text, _wa_book_buttons(slot_label))
 
 
 @app.post("/telegram")
@@ -513,7 +535,7 @@ def _deliver(title: str, message: str, reply_markup: Optional[dict] = None,
     delivered: dict = {}
     if "telegram" in channels:
         try:
-            send_telegram(message, reply_markup)
+            _tg_send_chunked(message, reply_markup)
             delivered["telegram"] = True
         except Exception as exc:  # noqa: BLE001 — resilience path; logged
             log.error("Telegram send failed: %s", exc)
@@ -521,7 +543,7 @@ def _deliver(title: str, message: str, reply_markup: Optional[dict] = None,
     if "whatsapp" in channels:
         try:
             buttons = _wa_book_buttons(slot_label) if slot_label else None
-            send_whatsapp(message, buttons)
+            _wa_send_chunked(message, buttons)
             delivered["whatsapp"] = True
         except Exception as exc:  # noqa: BLE001 — resilience path; logged
             log.error("WhatsApp send failed: %s", exc)
