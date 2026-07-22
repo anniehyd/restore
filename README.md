@@ -86,6 +86,29 @@ uvicorn app.main:app --reload
   `TELEGRAM_CHAT_ID`. For chat replies, register the webhook with
   `scripts/set_telegram_webhook.py` once deployed.
 
+## Weather + AQI alerts
+
+Silence by default: normal weather sends nothing, ever. AnAn only pings you
+for actionable conditions, via [Open-Meteo](https://open-meteo.com) (no API
+key):
+
+- **7:00 AM ET morning check** (scans today 8 AM–10 PM): one combined message
+  for rain ≥50% chance, any snow, feels-like ≥95°F, or feels-like ≤20°F.
+- **AQI monitor** (every 2h, 8 AM–8 PM ET): strong alert at AQI ≥150, one
+  softer heads-up per day at 101–149, and a one-time all-clear when a bad-air
+  day recovers. Banded dedupe — no repeat alerts unless the air gets *worse*
+  or it's a new day.
+- The advisor also sees current conditions, so AnAn won't suggest a walk when
+  it's about to pour or the air is rough.
+
+Location and all thresholds live in `.env.example` (`WEATHER_LAT/LON`,
+`RAIN_PROB_THRESHOLD`, `AQI_ALERT`, `AQI_SOFT`, `HEAT_F`, `COLD_F`); disable
+entirely with `WEATHER_ALERTS_ENABLED=false`. Preview without sending:
+
+```bash
+python scripts/weather_dry_run.py
+```
+
 ## Delivery channels
 
 `PUSH_CHANNEL` selects where the brief goes: `telegram` (default), `whatsapp`,

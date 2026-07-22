@@ -136,6 +136,18 @@ def load_snapshot() -> Optional[dict]:
     return _read_state().get("snapshot")
 
 
+def get_weather_state() -> dict:
+    """Weather-alert dedupe state (morning check + AQI bands)."""
+    return _read_state().get("weather", {})
+
+
+def set_weather_state(weather: dict) -> None:
+    with _LOCK:
+        state = _read_state()
+        state["weather"] = weather
+        _write_state(state)
+
+
 def mark_update_seen(update_id) -> bool:
     """Record a webhook update id (Telegram int or WhatsApp wamid string).
     Returns True if new, False if already seen."""
